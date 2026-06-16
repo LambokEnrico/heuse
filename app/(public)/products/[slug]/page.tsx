@@ -133,7 +133,8 @@ export default async function ProductDetailPage({ params }: Props) {
               </Badge>
             </div>
 
-            {/* Buy Now — primary CTA. Cart still accessible via header icon. */}
+            {/* Buy Now — primary CTA on detail page.
+                Add to Cart is available on product listing cards (/products). */}
             {availability === "sold-out" ? (
               <Link
                 href={`/contact?product=${product.slug}&subject=Waitlist: ${product.name}`}
