@@ -27,6 +27,7 @@ const cspHeader = [
   "font-src 'self' data: https://fonts.gstatic.com",
   // PayPal API + UploadThing API (incl. regional ingest endpoints like
   // sea1.ingest.uploadthing.com + utfs.io CDN). Dev: ws:/wss: for HMR WebSocket.
+  // force-rebuild marker: 1781628705
   isDev
     ? "connect-src 'self' https://api-m.sandbox.paypal.com https://api-m.paypal.com https://*.paypal.com https://api.uploadthing.com https://*.ingest.uploadthing.com https://utfs.io ws: wss:"
     : "connect-src 'self' https://api-m.sandbox.paypal.com https://api-m.paypal.com https://*.paypal.com https://api.uploadthing.com https://*.ingest.uploadthing.com https://utfs.io",
