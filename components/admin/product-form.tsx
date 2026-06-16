@@ -52,6 +52,8 @@ interface ProductFormProps {
     editionLimit: number;
     featured: boolean;
     status: string;
+    images?: string[];
+    variants?: { size: string; stock: number }[];
   };
   categories: { id: string; name: string }[];
   drops: { id: string; name: string }[];
@@ -63,12 +65,15 @@ export function ProductForm({ product, categories, drops }: ProductFormProps) {
   const router = useRouter();
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Load existing variants when editing; otherwise seed with default SIZES.
+  // If editing a product with no variants stored, start empty (don't auto-seed).
   const [variants, setVariants] = useState<{ size: string; stock: number }[]>(
     product
-      ? []
+      ? (product.variants ?? [])
       : SIZES.map((size) => ({ size, stock: 0 }))
   );
-  const [images, setImages] = useState<string[]>([]);
+  // Load existing images when editing; empty array for new product.
+  const [images, setImages] = useState<string[]>(product?.images ?? []);
 
   const form = useForm<ProductFormData>({
     resolver: zodResolver(productSchema) as any,

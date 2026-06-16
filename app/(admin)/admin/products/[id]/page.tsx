@@ -67,6 +67,14 @@ export default async function EditProductPage({ params }: PageProps) {
             editionLimit: product.editionLimit,
             featured: product.featured,
             status: product.status,
+            images: product.images
+              .slice()
+              .sort((a, b) => a.sortOrder - b.sortOrder)
+              .map((img) => img.url),
+            variants: product.variants.map((v) => ({
+              size: v.size,
+              stock: v.stock,
+            })),
           }}
           categories={categories}
           drops={drops}
