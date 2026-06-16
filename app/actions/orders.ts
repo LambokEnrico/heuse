@@ -208,20 +208,44 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
       include: { items: true },
     });
     if (existing) {
-      // Return existing approval URL if we already created a PayPal order.
-      // For duplicate calls we can't return the original raw viewToken
-      // (it's hashed in DB) — clients should re-use the value from the
-      // first response. We surface a hint to make this obvious.
+      // Idempotency: same idempotencyKey submitted again (e.g. double-click,
+      // browser retry, network re-submit). Re-fetch the PayPal order to
+      // get its current approval URL. If PayPal order is no longer
+      // approvable (captured/voided), redirect to the success page so the
+      // client can render the latest order status.
       if (existing.paypalOrderId) {
+        const { getPayPalOrder } = await import("@/lib/paypal");
+        try {
+          const paypalOrder = await getPayPalOrder(existing.paypalOrderId);
+          const approvalLink = paypalOrder.links.find((l) => l.rel === "approve");
+          if (approvalLink) {
+            return {
+              success: true,
+              data: {
+                orderId: existing.id,
+                orderNumber: existing.orderNumber,
+                paypalOrderId: existing.paypalOrderId,
+                approvalUrl: approvalLink.href,
+                total: Number(existing.total),
+                viewToken: null, // Re-use from original response
+              },
+            };
+          }
+        } catch {
+          // Fall through to success URL fallback
+        }
+        // Fallback: PayPal order is no longer approvable. Point client at
+        // the success page so they see the current status (or the cancel
+        // page if needed).
         return {
           success: true,
           data: {
             orderId: existing.id,
             orderNumber: existing.orderNumber,
             paypalOrderId: existing.paypalOrderId,
-            approvalUrl: `${process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"}/checkout/pay/${existing.id}`,
+            approvalUrl: `${process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"}/checkout/success/${existing.orderNumber}`,
             total: Number(existing.total),
-            viewToken: null, // Re-use from original response
+            viewToken: null,
           },
         };
       }
@@ -334,8 +358,10 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
       // mobile browsers) and gives the success page a reliable verification
       // mechanism.
       const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-      const returnUrl = `${siteUrl}/checkout/success/${newOrder.orderNumber}?token=${encodeURIComponent(viewToken)}`;
-      const cancelUrl = `${siteUrl}/checkout/cancel/${newOrder.orderNumber}?token=${encodeURIComponent(viewToken)}`;
+      // Use 'viewToken' (not 'token') to avoid collision with PayPal's own
+      // ?token={PAYPAL_ORDER_ID}&PayerID=… that PayPal appends on redirect.
+      const returnUrl = `${siteUrl}/checkout/success/${newOrder.orderNumber}?viewToken=${encodeURIComponent(viewToken)}`;
+      const cancelUrl = `${siteUrl}/checkout/cancel/${newOrder.orderNumber}?viewToken=${encodeURIComponent(viewToken)}`;
 
       const paypalOrder = await createPayPalOrder({
         orderNumber: newOrder.orderNumber,

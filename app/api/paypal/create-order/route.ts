@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
     // it from sessionStorage.
     const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
     const tokenSuffix = viewToken
-      ? `?token=${encodeURIComponent(viewToken)}`
+      ? `?viewToken=${encodeURIComponent(viewToken)}`
       : "";
     const returnUrl = `${siteUrl}/checkout/success/${order.orderNumber}${tokenSuffix}`;
     const cancelUrl = `${siteUrl}/checkout/cancel/${order.orderNumber}${tokenSuffix}`;

@@ -30,8 +30,9 @@ export function PayRetryButton({ orderId, orderNumber, viewState }: Props) {
     setLoading(true);
     try {
       // SECURITY: Include the viewToken so the success page can authenticate
-      // when PayPal redirects back. Fall back to the current URL's token.
-      const urlToken = new URLSearchParams(window.location.search).get("token");
+      // when PayPal redirects back. Read 'viewToken' (not 'token') to avoid
+      // collision with PayPal's own ?token=<PayPalOrderId> param.
+      const urlToken = new URLSearchParams(window.location.search).get("viewToken");
       const stored = sessionStorage.getItem("pendingPayment");
       const sessionToken = stored
         ? (JSON.parse(stored) as { viewToken?: string | null }).viewToken ?? null

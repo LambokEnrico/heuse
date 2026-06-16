@@ -11,7 +11,7 @@ import { verifyOrderViewToken, isTokenExpired } from "@/lib/order-token";
 
 interface Props {
   params: Promise<{ orderNumber: string }>;
-  searchParams: Promise<{ token?: string }>;
+  searchParams: Promise<{ viewToken?: string }>;
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -24,7 +24,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function CheckoutCancelPage({ params, searchParams }: Props) {
   const { orderNumber } = await params;
-  const { token } = await searchParams;
+  const { viewToken: token } = await searchParams;
 
   // SECURITY: same token gate as success page (prevent IDOR on order data)
   const tokenRow = await prisma.order.findUnique({
