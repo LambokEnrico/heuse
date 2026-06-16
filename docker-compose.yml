@@ -1,0 +1,32 @@
+# ============================================
+# HEUSE - Local Development Docker Compose
+# ============================================
+# Start: docker compose up -d
+# Stop:  docker compose down
+# Logs:  docker compose logs -f postgres
+#
+# Connection string: postgresql://postgres:postgres@localhost:5433/heuse_dev
+# ============================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: heuse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: heuse_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - heuse_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d heuse_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  heuse_pg_data:
+    driver: local

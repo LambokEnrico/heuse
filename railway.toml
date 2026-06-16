@@ -1,0 +1,21 @@
+# Railway deployment config for HEUSE
+# Docs: https://docs.railway.app/reference/config-as-code
+
+[build]
+# NIXPACKS auto-detects Next.js, runs `npm run build` (= prisma generate && next build)
+# Node version is pinned via nixpacks.toml (see that file) and NIXPACKS_NODE_VERSION env var
+builder = "NIXPACKS"
+
+[deploy]
+# `npm run start` = `prisma migrate deploy && next start`
+# Migrations run automatically on every deploy
+startCommand = "npm run start"
+
+# Healthcheck pings /api/health every 30s
+# /api/health returns { status: "ok", database: "connected" } when DB is up
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+
+# Restart on failure
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

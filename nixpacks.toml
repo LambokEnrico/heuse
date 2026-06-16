@@ -1,0 +1,18 @@
+# Nixpacks build config for HEUSE
+# Docs: https://nixpacks.com/docs/configuration/file
+#
+# Pin Node 20.19+ — Prisma 7 requires it (refuses to install on Node < 20.19)
+# This is the SOURCE OF TRUTH for the build Node version.
+# (Also set NIXPACKS_NODE_VERSION=20.19.0 in Railway Variables as a safety net.)
+
+[variables]
+NODE_VERSION = "20.19.0"
+
+[phases.setup]
+nixPkgs = ["nodejs_20", "npm-10_19"]
+
+[phases.install]
+cmds = ["npm ci --include=dev --legacy-peer-deps"]
+
+[start]
+cmd = "npm run start"
