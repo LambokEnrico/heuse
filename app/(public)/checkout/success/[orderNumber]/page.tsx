@@ -64,7 +64,10 @@ export default async function CheckoutSuccessPage({ params, searchParams }: Prop
   //   app/api/paypal/create-order/route.ts (tokenSuffix)
   //   app/(public)/checkout/cancel/[orderNumber]/page.tsx
   //   app/(public)/checkout/success/[orderNumber]/pay-retry-button.tsx
+  //
+  // CACHE_BUST_MARKER_2026_06_17_11:30
   const authToken = viewToken || token;
+  console.log(`[CACHE_BUST] success page orderNumber=${orderNumber} viewToken=${viewToken?.slice(0,8)}... token=${token?.slice(0,8)}... authToken=${authToken?.slice(0,8)}...`);
 
   const tokenRow = await prisma.order.findUnique({
     where: { orderNumber },
