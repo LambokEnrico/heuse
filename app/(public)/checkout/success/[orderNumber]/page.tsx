@@ -107,6 +107,7 @@ export default async function CheckoutSuccessPage({ params, searchParams }: Prop
 
   return (
     <div className="min-h-screen bg-heuse-black">
+      {/* CACHE_BUST_HTML_MARKER_2026_06_17_1135 */}
       {/* Auto-capture: triggered when user returns from PayPal approval */}
       {urlStatus !== "success" &&
         order.paypalOrderId &&
