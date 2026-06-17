@@ -94,32 +94,93 @@ export async function POST(req: NextRequest) {
   const captureStatus = (event.resource as { status?: string }).status;
   const mapped = mapPayPalStatus(event.event_type, captureStatus);
 
-  const updateData: Record<string, unknown> = {
-    paymentStatus: mapped.paymentStatus,
-    status: mapped.orderStatus,
-    paymentResponse: JSON.stringify(event),
-  };
+  // Idempotency: skip if order is already in a final state.
+  // This prevents double-decrement when both capture-order AND webhook fire.
+  const isAlreadyPaid = order.paymentStatus === "PAID";
+  const isAlreadyCancelled = order.status === "CANCELLED";
+  const isFinalState = isAlreadyPaid || isAlreadyCancelled;
 
-  if (mapped.paymentStatus === "PAID") {
-    updateData.paidAt = new Date();
-  }
-
-  await prisma.order.update({
-    where: { id: order.id },
-    data: updateData,
-  });
-
-  // Step 6: If cancelled, release reserved stock
-  if (mapped.orderStatus === "CANCELLED" && order.status !== "CANCELLED") {
-    for (const item of order.items) {
-      if (item.variantId) {
-        await prisma.productVariant.update({
-          where: { id: item.variantId },
-          data: { stock: { increment: item.quantity } },
-        });
+  // Step 6: Handle state transitions
+  if (mapped.orderStatus === "CANCELLED" && !isAlreadyCancelled) {
+    // Cancelled (e.g., payment denied) — release stock
+    await prisma.$transaction(async (tx) => {
+      for (const item of order.items) {
+        if (item.variantId) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: { stock: { increment: item.quantity } },
+          });
+        }
       }
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          paymentStatus: mapped.paymentStatus,
+          status: mapped.orderStatus,
+          paymentResponse: JSON.stringify(event),
+        },
+      });
+    });
+  } else if (mapped.paymentStatus === "PAID" && !isAlreadyPaid) {
+    // Newly PAID — decrement stock (atomic with order update)
+    try {
+      await prisma.$transaction(async (tx) => {
+        // Pre-flight stock check
+        for (const item of order.items) {
+          if (!item.variantId) continue;
+          const variant = await tx.productVariant.findUnique({
+            where: { id: item.variantId },
+            select: { stock: true, product: { select: { name: true } } },
+          });
+          if (!variant || variant.stock < item.quantity) {
+            throw new Error(
+              `Insufficient stock for ${variant?.product.name ?? "item"} (need ${item.quantity}, have ${variant?.stock ?? 0})`
+            );
+          }
+        }
+        // Decrement stock
+        for (const item of order.items) {
+          if (item.variantId) {
+            await tx.productVariant.update({
+              where: { id: item.variantId },
+              data: { stock: { decrement: item.quantity } },
+            });
+          }
+        }
+        // Update order
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            paymentStatus: mapped.paymentStatus,
+            status: mapped.orderStatus,
+            paidAt: new Date(),
+            paymentResponse: JSON.stringify(event),
+          },
+        });
+      });
+    } catch (txErr) {
+      const message = txErr instanceof Error ? txErr.message : "Transaction failed";
+      console.error(`[paypal-webhook] ${message} for order ${order.orderNumber}`);
+      await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          status: "CANCELLED",
+          internalNote: `AUTO-CANCELLED at webhook: ${message}. PayPal captured the money — admin must issue refund via PayPal dashboard.`,
+        },
+      });
     }
+  } else if (!isFinalState) {
+    // Other status update (e.g., payment pending) — no stock change
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        paymentStatus: mapped.paymentStatus,
+        status: mapped.orderStatus,
+        paymentResponse: JSON.stringify(event),
+      },
+    });
   }
+  // If isFinalState and no state change needed, no-op (idempotent)
 
   return NextResponse.json({ ok: true });
 }

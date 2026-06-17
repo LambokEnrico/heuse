@@ -335,10 +335,10 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
 
       for (const it of orderItemsData) {
         await tx.orderItem.create({ data: { orderId: newOrder.id, ...it } });
-        await tx.productVariant.update({
-          where: { id: it.variantId },
-          data: { stock: { decrement: it.quantity } },
-        });
+        // NOTE: Stock is NOT decremented at order creation.
+        // Decrement happens at payment success (in /api/paypal/capture-order
+        // and /api/paypal/webhook). This prevents unpaid reservations from
+        // locking inventory — see the docs/orders.md for the full flow.
       }
 
       return { newOrder, total, orderItemsData, viewToken };
@@ -540,9 +540,32 @@ export async function updateOrderStatus(input: unknown): Promise<ActionResponse<
       return { success: false, error: { code: "NOT_FOUND", message: "Order not found" } };
     }
 
-    // If cancelling, release reserved units
+    // If cancelling, release reserved stock on productVariant
+    // (NOTE: this is the canonical release path for admin-cancelled orders.
+    // editionUnit release was buggy because EditionUnit rows may not exist
+    // for orders created before the EditionUnit migration. productVariant.stock
+    // is the source of truth for the storefront.)
     if (status === "CANCELLED" && order.status !== "CANCELLED") {
+      const orderWithItems = await prisma.order.findUnique({
+        where: { id: orderId },
+        include: { items: true },
+      });
+
       await prisma.$transaction(async (tx) => {
+        // Release stock on productVariant (atomic with order update)
+        if (orderWithItems) {
+          for (const item of orderWithItems.items) {
+            if (item.variantId) {
+              await tx.productVariant.update({
+                where: { id: item.variantId },
+                data: { stock: { increment: item.quantity } },
+              });
+            }
+          }
+        }
+
+        // Best-effort release of editionUnit (only relevant for orders that
+        // had EditionUnit rows linked — most don't)
         await tx.editionUnit.updateMany({
           where: { orderItem: { orderId } },
           data: { status: "AVAILABLE", orderItemId: null },
@@ -591,5 +614,109 @@ export async function updateOrderStatus(input: unknown): Promise<ActionResponse<
   } catch (error) {
     console.error("[updateOrderStatus]", error);
     return { success: false, error: { code: "SERVER_ERROR", message: "Failed to update order" } };
+  }
+}
+
+/**
+ * Manually release stock for an unpaid order.
+ *
+ * Use case: an order is stuck in AWAITING_PAYMENT + UNPAID state and
+ * stock should be returned to the catalog before the 24h cron releases it.
+ * (E.g., admin knows the customer abandoned the checkout.)
+ *
+ * Refuses to act on:
+ *   - PAID orders (stock is already committed; refund instead)
+ *   - REFUNDED orders (stock already released)
+ *   - CANCELLED orders (already released by cron or previous action)
+ *
+ * Idempotent: re-running on a cancelled order returns ALREADY_CANCELLED.
+ */
+export async function releaseOrderStock(input: unknown): Promise<ActionResponse<{ orderId: string }>> {
+  const auth = await requireRole(["ADMIN", "OWNER"]);
+  if (!auth.authorized) return auth.error;
+
+  try {
+    const parsed = z
+      .object({ orderId: z.string().cuid() })
+      .safeParse(input);
+    if (!parsed.success) {
+      return {
+        success: false,
+        error: { code: "VALIDATION_ERROR", message: "Invalid orderId" },
+      };
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { id: parsed.data.orderId },
+      include: { items: true },
+    });
+
+    if (!order) {
+      return { success: false, error: { code: "NOT_FOUND", message: "Order not found" } };
+    }
+
+    if (order.status === "CANCELLED") {
+      return {
+        success: false,
+        error: { code: "ALREADY_CANCELLED", message: "Order is already cancelled" },
+      };
+    }
+
+    if (order.paymentStatus !== "UNPAID") {
+      return {
+        success: false,
+        error: {
+          code: "INVALID_STATE",
+          message: `Cannot release stock for ${order.paymentStatus} order. Use refund flow instead.`,
+        },
+      };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Release stock on productVariant (atomic with order update)
+      for (const item of order.items) {
+        if (item.variantId) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: { stock: { increment: item.quantity } },
+          });
+        }
+      }
+      // Best-effort editionUnit release (most orders don't have these)
+      await tx.editionUnit.updateMany({
+        where: { orderItem: { orderId: order.id } },
+        data: { status: "AVAILABLE", orderItemId: null },
+      });
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: "CANCELLED",
+          internalNote: (order.internalNote ? order.internalNote + "\n" : "") +
+            `[Stock released manually by admin ${new Date().toISOString()}]`,
+        },
+      });
+    });
+
+    await auditLog({
+      action: "order.release_stock",
+      resource: `Order:${order.id}`,
+      details: {
+        orderNumber: order.orderNumber,
+        itemsReleased: order.items.length,
+        reason: "manual_admin_release",
+      },
+    });
+
+    revalidatePath("/admin/orders");
+    revalidatePath(`/admin/orders/${order.id}`);
+
+    return { success: true, data: { orderId: order.id } };
+  } catch (error) {
+    console.error("[releaseOrderStock]", error);
+    return {
+      success: false,
+      error: { code: "SERVER_ERROR", message: "Failed to release stock" },
+    };
   }
 }

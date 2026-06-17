@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { redirect, notFound } from "next/navigation";
 import { requireRole } from "@/lib/permissions";
 import { OrderStatusForm } from "@/components/admin/order-status-form";
+import { ReleaseStockButton } from "@/components/admin/release-stock-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -113,7 +114,7 @@ export default async function OrderDetailPage({ params }: PageProps) {
           <CardHeader>
             <CardTitle>Order Status</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             <OrderStatusForm
               order={{
                 id: order.id,
@@ -123,6 +124,22 @@ export default async function OrderDetailPage({ params }: PageProps) {
                 internalNote: order.internalNote,
               }}
             />
+            {/* Manual stock release — only for unpaid, awaiting payment orders.
+                Once the order is PAID/CANCELLED, the stock is already
+                committed or already released, so the button hides. */}
+            {order.paymentStatus === "UNPAID" && order.status === "AWAITING_PAYMENT" && (
+              <div className="pt-4 border-t border-heuse-border">
+                <p className="text-xs text-heuse-muted mb-2">
+                  Customer abandoned checkout? Release stock back to the
+                  catalog now (otherwise the 24h cron will do it later).
+                </p>
+                <ReleaseStockButton
+                  orderId={order.id}
+                  orderNumber={order.orderNumber}
+                  itemCount={order.items.length}
+                />
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

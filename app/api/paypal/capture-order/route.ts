@@ -131,21 +131,78 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 4: Update order in DB
+    // Step 4: Update order in DB + decrement stock (atomic transaction)
     const mapped = mapPayPalStatus("PAYMENT.CAPTURE.COMPLETED", captureRecord.status);
 
-    await prisma.order.update({
+    // Fetch order items for stock decrement (with variantId for each)
+    const orderWithItems = await prisma.order.findUnique({
       where: { id: order.id },
-      data: {
-        paymentStatus: mapped.paymentStatus,
-        status: mapped.orderStatus,
-        paypalCaptureId: captureRecord.id,
-        paypalPayerId: payer.payer_id || undefined,
-        paypalPayerEmail: payer.email_address || order.customerEmail,
-        paidAt: new Date(),
-        paymentResponse: JSON.stringify({ captureRecord, payer }),
-      },
+      include: { items: true },
     });
+    if (!orderWithItems) {
+      return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        // Pre-flight: verify stock is still available for all items.
+        // With "decrement at payment" model, two concurrent buyers can both
+        // create orders for the last unit. Fail this one if stock ran out
+        // between order creation and payment.
+        for (const item of orderWithItems.items) {
+          if (!item.variantId) continue;
+          const variant = await tx.productVariant.findUnique({
+            where: { id: item.variantId },
+            select: { stock: true, product: { select: { name: true } } },
+          });
+          if (!variant || variant.stock < item.quantity) {
+            throw new Error(
+              `Insufficient stock for ${variant?.product.name ?? "item"} (need ${item.quantity}, have ${variant?.stock ?? 0})`
+            );
+          }
+        }
+
+        // Decrement stock for each item
+        for (const item of orderWithItems.items) {
+          if (!item.variantId) continue;
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: { stock: { decrement: item.quantity } },
+          });
+        }
+
+        // Update order to PAID
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            paymentStatus: mapped.paymentStatus,
+            status: mapped.orderStatus,
+            paypalCaptureId: captureRecord.id,
+            paypalPayerId: payer.payer_id || undefined,
+            paypalPayerEmail: payer.email_address || order.customerEmail,
+            paidAt: new Date(),
+            paymentResponse: JSON.stringify({ captureRecord, payer }),
+          },
+        });
+      });
+    } catch (txErr) {
+      // If insufficient stock, the payment is still captured by PayPal but
+      // we can't fulfill. We need to refund the customer.
+      // (For now, mark order as FAILED with a clear note so admin can act.)
+      const message = txErr instanceof Error ? txErr.message : "Transaction failed";
+      await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          status: "CANCELLED",
+          internalNote: `AUTO-CANCELLED at capture: ${message}. PayPal captured the money — admin must issue refund via PayPal dashboard.`,
+        },
+      });
+      console.error(`[paypal-capture] ${message} for order ${order.orderNumber}`);
+      return NextResponse.json(
+        { error: message, orderStatus: "CANCELLED", refundRequired: true },
+        { status: 409 }
+      );
+    }
 
     return NextResponse.json({
       ok: true,
