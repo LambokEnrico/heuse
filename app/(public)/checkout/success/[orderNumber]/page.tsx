@@ -12,7 +12,13 @@ import { verifyOrderViewToken, isTokenExpired } from "@/lib/order-token";
 
 interface Props {
   params: Promise<{ orderNumber: string }>;
-  searchParams: Promise<{ status?: string; retry?: string; token?: string }>;
+  searchParams: Promise<{
+    status?: string;
+    retry?: string;
+    token?: string;
+    viewToken?: string;
+    PayerID?: string;
+  }>;
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -46,12 +52,20 @@ function getViewState(
 
 export default async function CheckoutSuccessPage({ params, searchParams }: Props) {
   const { orderNumber } = await params;
-  const { status: urlStatus, retry, token } = await searchParams;
+  const { status: urlStatus, retry, token, viewToken } = await searchParams;
 
   // SECURITY: Require a valid view token to access this page.
   // The token is generated at order creation and embedded in the PayPal
   // return_url. Without a valid token, we don't reveal whether the order
   // exists (404 instead of 403, to prevent enumeration).
+  //
+  // CRITICAL: Prefer 'viewToken' over 'token' because PayPal overwrites
+  // '?token=...' with the PayPal order ID on redirect. See:
+  //   app/api/paypal/create-order/route.ts (tokenSuffix)
+  //   app/(public)/checkout/cancel/[orderNumber]/page.tsx
+  //   app/(public)/checkout/success/[orderNumber]/pay-retry-button.tsx
+  const authToken = viewToken || token;
+
   const tokenRow = await prisma.order.findUnique({
     where: { orderNumber },
     select: {
@@ -63,7 +77,7 @@ export default async function CheckoutSuccessPage({ params, searchParams }: Prop
   if (
     !tokenRow ||
     !tokenRow.viewToken ||
-    !verifyOrderViewToken(token, tokenRow.viewToken) ||
+    !verifyOrderViewToken(authToken, tokenRow.viewToken) ||
     isTokenExpired(tokenRow.viewTokenExpiresAt)
   ) {
     notFound();
@@ -302,7 +316,10 @@ export default async function CheckoutSuccessPage({ params, searchParams }: Prop
             </Button>
           </Link>
           {viewState === "unknown" && (
-            <Link href={`/checkout/success/${order.orderNumber}`} className="flex-1">
+            <Link
+              href={`/checkout/success/${order.orderNumber}?viewToken=${encodeURIComponent(authToken || "")}`}
+              className="flex-1"
+            >
               <Button className="w-full bg-heuse-gold text-heuse-black hover:bg-[#c9a862] py-6">
                 <RefreshCw className="w-4 h-4 mr-2" />
                 Refresh Status

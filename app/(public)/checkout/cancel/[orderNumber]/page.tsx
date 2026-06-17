@@ -63,7 +63,7 @@ export default async function CheckoutCancelPage({ params, searchParams }: Props
           <p className="text-heuse-muted text-lg mb-8">
             This order has already been paid. View the order details for confirmation.
           </p>
-          <Link href={`/checkout/success/${tokenRow.orderNumber}?token=${encodeURIComponent(token || "")}`}>
+          <Link href={`/checkout/success/${tokenRow.orderNumber}?viewToken=${encodeURIComponent(token || "")}`}>
             <Button className="bg-heuse-gold text-heuse-black hover:bg-[#c9a862] py-6 px-8">
               View Order Status
             </Button>
