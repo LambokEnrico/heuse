@@ -5,6 +5,7 @@ import {
   mapPayPalStatus,
   type PayPalWebhookEvent,
 } from "@/lib/paypal";
+import { sendOrderConfirmation } from "@/lib/email";
 
 /**
  * PayPal webhook handler.
@@ -158,6 +159,30 @@ export async function POST(req: NextRequest) {
           },
         });
       });
+
+      // Send confirmation email AFTER successful transaction
+      // (best-effort — failure here doesn't roll back the order)
+      try {
+        await sendOrderConfirmation({
+          email: order.customerEmail,
+          customerName: order.customerName,
+          orderNumber: order.orderNumber,
+          total: Number(order.total),
+          items: order.items.map((it) => ({
+            name: it.name,
+            size: it.size,
+            quantity: it.quantity,
+            price: Number(it.price),
+          })),
+          siteUrl: process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
+        });
+      } catch (emailErr) {
+        console.error(
+          `[paypal-webhook] Failed to send confirmation email for ${order.orderNumber}:`,
+          emailErr
+        );
+        // Don't fail the webhook response — email is best-effort
+      }
     } catch (txErr) {
       const message = txErr instanceof Error ? txErr.message : "Transaction failed";
       console.error(`[paypal-webhook] ${message} for order ${order.orderNumber}`);
