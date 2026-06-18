@@ -12,4 +12,8 @@ export * from "./settings";
 export * from "./articles";
 // Note: createOrderWithPayPalPayment is exported via ./orders
 // Re-exported explicitly so the index has it documented
-export { createOrderWithPayPalPayment, checkOrderPaymentStatus } from "./orders";
+export {
+  createOrderWithPayPalPayment,
+  checkOrderPaymentStatus,
+  refundOrder,
+} from "./orders";

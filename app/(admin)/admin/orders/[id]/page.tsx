@@ -4,6 +4,7 @@ import { redirect, notFound } from "next/navigation";
 import { requireRole } from "@/lib/permissions";
 import { OrderStatusForm } from "@/components/admin/order-status-form";
 import { ReleaseStockButton } from "@/components/admin/release-stock-button";
+import { RefundButton } from "@/components/admin/refund-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -138,6 +139,45 @@ export default async function OrderDetailPage({ params }: PageProps) {
                   orderNumber={order.orderNumber}
                   itemCount={order.items.length}
                 />
+              </div>
+            )}
+            {/* Refund — only for PAID orders that have not been refunded yet.
+                Hidden if already refunded (info shown below) or unpaid. */}
+            {order.paymentStatus === "PAID" && !order.refundedAt && order.paypalCaptureId && (
+              <div className="pt-4 border-t border-heuse-border">
+                <p className="text-xs text-heuse-muted mb-2">
+                  Issue a PayPal refund. Stock will be released and the
+                  customer will be notified by email.
+                </p>
+                <RefundButton
+                  orderId={order.id}
+                  orderNumber={order.orderNumber}
+                  orderTotal={Number(order.total)}
+                />
+              </div>
+            )}
+            {/* Refund info — shown when order has been refunded */}
+            {order.refundedAt && (
+              <div className="pt-4 border-t border-heuse-border">
+                <p className="text-xs text-heuse-muted uppercase tracking-wider mb-2">
+                  Refund Information
+                </p>
+                <div className="bg-red-500/10 border border-red-500/30 rounded-md p-3 space-y-1">
+                  <p className="text-sm text-red-200">
+                    Refunded {formatMoney(Number(order.refundAmount ?? 0))} on{" "}
+                    {formatDate(order.refundedAt)}
+                  </p>
+                  {order.refundId && (
+                    <p className="text-xs text-heuse-muted font-mono">
+                      PayPal Refund ID: {order.refundId}
+                    </p>
+                  )}
+                  {order.refundReason && (
+                    <p className="text-xs text-heuse-muted">
+                      Reason: {order.refundReason}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </CardContent>

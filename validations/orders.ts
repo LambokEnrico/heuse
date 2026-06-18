@@ -34,5 +34,20 @@ export const updateOrderStatusSchema = z.object({
   internalNote: z.string().max(1000).optional(),
 });
 
+/**
+ * Refund an already-paid order via PayPal.
+ *
+ * - `amount` is in the order's original currency (e.g. IDR). Optional;
+ *   if omitted, a full refund is issued.
+ * - `reason` is a free-text note shown to the customer on PayPal side
+ *   and stored on the order for audit.
+ */
+export const refundOrderSchema = z.object({
+  orderId: z.string().cuid(),
+  amount: z.coerce.number().positive().max(100_000_000).optional(),
+  reason: z.string().max(500).optional(),
+});
+
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 export type UpdateOrderStatusInput = z.infer<typeof updateOrderStatusSchema>;
+export type RefundOrderInput = z.infer<typeof refundOrderSchema>;

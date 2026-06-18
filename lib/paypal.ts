@@ -505,3 +505,89 @@ export function getPayPalEnvironment(): Environment {
 export function getPayPalClientId(): string {
   return process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID || getClientId();
 }
+
+// =============================================================================
+// Refund
+// =============================================================================
+
+export interface PayPalRefund {
+  id: string;
+  status: "PENDING" | "COMPLETED" | "FAILED" | "CANCELLED";
+  amount: { currency_code: string; value: string };
+  custom_id?: string;
+  invoice_id?: string;
+  note_to_payer?: string;
+  create_time: string;
+  update_time: string;
+  links: Array<{ href: string; rel: string; method?: string }>;
+}
+
+export interface RefundPayPalOrderParams {
+  /** The PayPal capture ID (NOT the order ID). */
+  captureId: string;
+  /**
+   * Refund amount in the order's original currency (e.g. IDR).
+   * Omit for a full refund. Must be > 0 and <= captured amount.
+   */
+  amount?: string;
+  /**
+   * Currency code for `amount`. Defaults to PAYPAL_DEFAULT_CURRENCY
+   * (or "IDR"). Conversion to capture currency happens automatically
+   * (sandbox: IDR→USD; live: pass-through).
+   */
+  currency?: string;
+  /** Free-text note visible to the customer on PayPal side. */
+  noteToPayer?: string;
+}
+
+/**
+ * Issue a refund for a captured PayPal payment.
+ *
+ * Full refund: omit `amount` (or set to captured amount).
+ * Partial refund: set `amount` to the partial value.
+ *
+ * PayPal refund amount MUST be in the same currency as the capture.
+ * Sandbox captures are typically in USD (after IDR→USD conversion at
+ * order-creation time), so this function re-uses the same conversion
+ * logic via `convertForPayPal`.
+ *
+ * Docs: https://developer.paypal.com/api/rest/payments/captures/#captures_refund
+ */
+export async function refundPayPalOrder(
+  params: RefundPayPalOrderParams
+): Promise<PayPalRefund> {
+  const token = await getAccessToken();
+
+  let body: Record<string, unknown> = {};
+  if (params.amount) {
+    const currency = params.currency || process.env.PAYPAL_DEFAULT_CURRENCY || "IDR";
+    const converted = convertForPayPal(params.amount, currency);
+    body.amount = {
+      value: converted.amount,
+      currency_code: converted.currency,
+    };
+  }
+  if (params.noteToPayer) {
+    body.note_to_payer = params.noteToPayer.slice(0, 127); // PayPal limit
+  }
+
+  const res = await fetch(
+    `${getApiBase()}/v2/payments/captures/${params.captureId}/refund`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`PayPal refund error (${res.status}): ${text}`);
+  }
+
+  return (await res.json()) as PayPalRefund;
+}

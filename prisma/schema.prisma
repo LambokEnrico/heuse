@@ -291,6 +291,17 @@ model Order {
   paymentResponse  String?        // JSON snapshot of last webhook payload
   expiredAt        DateTime?
 
+  // Refund fields (set when admin issues a PayPal refund)
+  // The order can only be refunded after it has been PAID. refundId is the
+  // PayPal refund transaction ID (for reconciliation with PayPal dashboard).
+  // refundAmount is in the order's original currency (e.g. IDR), and is
+  // converted to the capture currency at refund time (see lib/paypal.ts).
+  // An order is considered "refunded" if refundedAt is non-null.
+  refundedAt       DateTime?
+  refundAmount     Decimal?
+  refundReason     String?
+  refundId         String?
+
   // Order view access (for the /checkout/success/[orderNumber] page)
   // Random 32-byte token, base64url encoded. Required to view the order's
   // customer PII. Sent in the success URL on the redirect.

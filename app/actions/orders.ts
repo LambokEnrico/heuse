@@ -3,12 +3,17 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { createOrderSchema, updateOrderStatusSchema } from "@/validations/orders";
+import {
+  createOrderSchema,
+  updateOrderStatusSchema,
+  refundOrderSchema,
+} from "@/validations/orders";
 import { requireRole } from "@/lib/permissions";
 import { generateOrderNumber } from "@/lib/utils";
-import { createPayPalOrder } from "@/lib/paypal";
+import { createPayPalOrder, refundPayPalOrder } from "@/lib/paypal";
 import { issueOrderViewToken } from "@/lib/order-token";
 import { auditLog } from "@/lib/audit";
+import { sendOrderCancelled } from "@/lib/email";
 import type { ActionResponse } from "@/types";
 
 /**
@@ -717,6 +722,220 @@ export async function releaseOrderStock(input: unknown): Promise<ActionResponse<
     return {
       success: false,
       error: { code: "SERVER_ERROR", message: "Failed to release stock" },
+    };
+  }
+}
+
+/**
+ * Issue a PayPal refund for a paid order.
+ *
+ * Flow:
+ *  1. Verify admin
+ *  2. Load order; reject if not PAID or already refunded, or no capture ID
+ *  3. Validate amount (full refund if omitted; otherwise <= captured total)
+ *  4. Call PayPal Refund API
+ *  5. Atomically:
+ *     - Update order: paymentStatus=REFUNDED, status=CANCELLED,
+ *       refundedAt, refundAmount, refundReason, refundId
+ *     - Release stock on productVariant (refunded = return to inventory)
+ *  6. Send cancellation email with refunded: true
+ *  7. Audit log
+ *
+ * If PayPal refund succeeds but DB write fails, we still return success
+ * (money is refunded; admin can reconcile). The opposite is impossible:
+ * we only mark refunded after PayPal returns success.
+ */
+export async function refundOrder(input: unknown): Promise<ActionResponse<{ orderId: string; refundId: string }>> {
+  const auth = await requireRole(["ADMIN", "OWNER"]);
+  if (!auth.authorized) return auth.error;
+
+  try {
+    const parsed = refundOrderSchema.safeParse(input);
+    if (!parsed.success) {
+      return {
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid input",
+          fieldErrors: parsed.error.flatten().fieldErrors,
+        },
+      };
+    }
+
+    const { orderId, amount, reason } = parsed.data;
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (!order) {
+      return { success: false, error: { code: "NOT_FOUND", message: "Order not found" } };
+    }
+
+    // State guards
+    if (order.paymentStatus === "REFUNDED" || order.refundedAt) {
+      return {
+        success: false,
+        error: {
+          code: "ALREADY_REFUNDED",
+          message: `Order already refunded at ${order.refundedAt?.toISOString() ?? "(unknown)"}.`,
+        },
+      };
+    }
+    if (order.paymentStatus !== "PAID") {
+      return {
+        success: false,
+        error: {
+          code: "INVALID_STATE",
+          message: `Cannot refund order with paymentStatus=${order.paymentStatus}. Only PAID orders can be refunded.`,
+        },
+      };
+    }
+    if (!order.paypalCaptureId) {
+      return {
+        success: false,
+        error: {
+          code: "NO_CAPTURE",
+          message:
+            "Order has no PayPal capture ID. Refund is only supported for orders paid via PayPal.",
+        },
+      };
+    }
+
+    // Amount validation (for partial refunds)
+    const orderTotal = Number(order.total);
+    if (amount !== undefined && amount > orderTotal) {
+      return {
+        success: false,
+        error: {
+          code: "AMOUNT_TOO_HIGH",
+          message: `Refund amount (${amount}) exceeds order total (${orderTotal}).`,
+        },
+      };
+    }
+
+    // Call PayPal Refund API
+    const currency = process.env.PAYPAL_DEFAULT_CURRENCY || "IDR";
+    const isZeroDecimal = ["IDR", "JPY", "TWD", "KRW", "VND"].includes(currency);
+    const amountString =
+      amount !== undefined
+        ? isZeroDecimal
+          ? Math.round(amount).toString()
+          : amount.toFixed(2)
+        : undefined;
+
+    let refund;
+    try {
+      refund = await refundPayPalOrder({
+        captureId: order.paypalCaptureId,
+        amount: amountString,
+        currency,
+        noteToPayer: reason
+          ? `Order ${order.orderNumber}: ${reason.slice(0, 100)}`
+          : `Refund for order ${order.orderNumber}`,
+      });
+    } catch (paypalError) {
+      console.error("[refundOrder] PayPal refund failed:", paypalError);
+      return {
+        success: false,
+        error: {
+          code: "PAYPAL_REFUND_FAILED",
+          message:
+            paypalError instanceof Error
+              ? paypalError.message
+              : "PayPal refund request failed. Order is NOT marked as refunded.",
+        },
+      };
+    }
+
+    if (refund.status !== "COMPLETED" && refund.status !== "PENDING") {
+      // FAILED / CANCELLED - don't update DB
+      return {
+        success: false,
+        error: {
+          code: "REFUND_NOT_COMPLETED",
+          message: `PayPal returned status=${refund.status}. Order is NOT marked as refunded.`,
+        },
+      };
+    }
+
+    // Compute refund amount in our internal currency
+    // (PayPal returns the amount in capture currency; we store in original)
+    const refundAmountStored = amount !== undefined ? amount : orderTotal;
+
+    // Atomic: update order + release stock
+    await prisma.$transaction(async (tx) => {
+      // Release stock (refund = return to inventory)
+      for (const item of order.items) {
+        if (item.variantId) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: { stock: { increment: item.quantity } },
+          });
+        }
+      }
+      // Best-effort editionUnit release
+      await tx.editionUnit.updateMany({
+        where: { orderItem: { orderId: order.id } },
+        data: { status: "AVAILABLE", orderItemId: null },
+      });
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          paymentStatus: "REFUNDED",
+          status: "CANCELLED",
+          refundedAt: new Date(),
+          refundAmount: refundAmountStored,
+          refundReason: reason ?? null,
+          refundId: refund.id,
+          internalNote:
+            (order.internalNote ? order.internalNote + "\n" : "") +
+            `[Refunded ${refundAmountStored} on ${new Date().toISOString()} via PayPal refund ${refund.id}${reason ? ` — ${reason}` : ""}]`,
+        },
+      });
+    });
+
+    await auditLog({
+      action: "order.refund",
+      resource: `Order:${order.id}`,
+      details: {
+        orderNumber: order.orderNumber,
+        refundAmount: refundAmountStored,
+        refundId: refund.id,
+        paypalStatus: refund.status,
+        reason: reason ?? null,
+      },
+    });
+
+    // Send cancellation/refund email (fire-and-forget; failures shouldn't block)
+    try {
+      await sendOrderCancelled({
+        email: order.customerEmail,
+        customerName: order.customerName,
+        orderNumber: order.orderNumber,
+        reason: reason ?? "Refund processed by merchant",
+        refunded: true,
+      });
+    } catch (emailError) {
+      console.error("[refundOrder] Failed to send refund email:", emailError);
+    }
+
+    revalidatePath("/admin/orders");
+    revalidatePath(`/admin/orders/${order.id}`);
+
+    return {
+      success: true,
+      data: { orderId: order.id, refundId: refund.id },
+    };
+  } catch (error) {
+    console.error("[refundOrder]", error);
+    return {
+      success: false,
+      error: {
+        code: "SERVER_ERROR",
+        message: "Failed to process refund. Please contact support if money was sent.",
+      },
     };
   }
 }
