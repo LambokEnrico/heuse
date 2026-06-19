@@ -5,12 +5,13 @@ import { requireRole } from "@/lib/permissions";
 import { OrderStatusForm } from "@/components/admin/order-status-form";
 import { ReleaseStockButton } from "@/components/admin/release-stock-button";
 import { RefundButton } from "@/components/admin/refund-button";
+import { ShipOrderForm } from "@/components/admin/ship-order-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMoney, formatDate } from "@/lib/utils";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Truck } from "lucide-react";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -183,6 +184,29 @@ export default async function OrderDetailPage({ params }: PageProps) {
           </CardContent>
         </Card>
       </div>
+
+      {/* Shipment (paid orders only) */}
+      {order.paymentStatus === "PAID" && (
+        <Card className="bg-heuse-dark border-heuse-border">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Truck className="w-5 h-5 text-heuse-gold" />
+              Shipment
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ShipOrderForm
+              orderId={order.id}
+              orderNumber={order.orderNumber}
+              customerEmail={order.customerEmail}
+              defaultTrackingNumber={order.trackingNumber ?? ""}
+              defaultTrackingCarrier={order.trackingCarrier ?? "JNE"}
+              shippedAt={order.shippedAt}
+              alreadyShipped={order.fulfillmentStatus === "SHIPPED" || order.fulfillmentStatus === "DELIVERED"}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {/* Order Items */}
       <Card className="bg-heuse-dark border-heuse-border">
