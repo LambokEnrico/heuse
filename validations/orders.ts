@@ -22,6 +22,8 @@ export const createOrderSchema = z.object({
     )
     .min(1),
   notes: z.string().max(500).optional(),
+  // Optional discount code (validated + applied server-side)
+  discountCode: z.string().min(1).max(64).optional(),
 });
 
 export const updateOrderStatusSchema = z.object({

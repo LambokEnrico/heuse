@@ -8,6 +8,7 @@ import { z } from "zod";
 import { Loader2, ArrowLeft, ArrowRight, Zap } from "lucide-react";
 import Link from "next/link";
 import { useCartStore } from "@/components/public/cart-store";
+import { DiscountCodeInput } from "@/components/public/discount-code-input";
 import { createOrderWithPayPalPayment } from "@/app/actions";
 import { formatMoney } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -48,7 +49,7 @@ function CheckoutForm() {
   const searchParams = useSearchParams();
   const isBuyNow = searchParams.get("mode") === "buy-now";
 
-  const { items, buyNowItem, getSubtotal, clearCart, clearBuyNowItem } = useCartStore();
+  const { items, buyNowItem, getSubtotal, getTotal, appliedDiscount, clearCart, clearBuyNowItem } = useCartStore();
 
   // Choose items: Buy Now (single) takes priority over cart
   const checkoutItems = useMemo(
@@ -62,6 +63,8 @@ function CheckoutForm() {
         : getSubtotal(),
     [isBuyNow, buyNowItem, getSubtotal]
   );
+  const discountAmount = appliedDiscount?.discountAmount ?? 0;
+  const total = Math.max(0, subtotal - discountAmount);
 
   const {
     register,
@@ -110,6 +113,7 @@ function CheckoutForm() {
       },
       items: orderItems,
       notes: data.notes,
+      discountCode: appliedDiscount?.code,
     });
 
     if (!result.success) {
@@ -348,16 +352,29 @@ function CheckoutForm() {
                   <span>Subtotal</span>
                   <span>{formatMoney(subtotal)}</span>
                 </div>
+                {appliedDiscount && (
+                  <div className="flex justify-between text-heuse-gold">
+                    <span className="flex items-center gap-1">
+                      Discount <span className="font-mono text-xs">({appliedDiscount.code})</span>
+                    </span>
+                    <span>−{formatMoney(discountAmount)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-heuse-muted">
                   <span>Shipping</span>
                   <span className="text-heuse-gold">To be confirmed</span>
                 </div>
               </div>
 
+              {/* Promo Code */}
+              <div className="py-6 border-b border-heuse-border">
+                <DiscountCodeInput customerEmail={undefined} />
+              </div>
+
               {/* Total */}
               <div className="flex justify-between py-6">
                 <span className="font-heading text-xl">Total</span>
-                <span className="font-heading text-xl text-heuse-text">{formatMoney(subtotal)}</span>
+                <span className="font-heading text-xl text-heuse-text">{formatMoney(total)}</span>
               </div>
             </div>
           </div>

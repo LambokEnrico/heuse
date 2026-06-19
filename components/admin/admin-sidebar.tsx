@@ -15,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  Tag,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "./sidebar-context";
@@ -26,6 +27,7 @@ const navItems = [
   { href: "/admin/drops", label: "Drops", icon: Zap },
   { href: "/admin/articles", label: "Articles", icon: FileText },
   { href: "/admin/orders", label: "Orders", icon: ShoppingCart },
+  { href: "/admin/discounts", label: "Discounts", icon: Tag },
   { href: "/admin/leads", label: "Leads", icon: Users },
   { href: "/admin/newsletter", label: "Newsletter", icon: Mail },
   { href: "/admin/settings", label: "Settings", icon: Settings },

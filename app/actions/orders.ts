@@ -14,6 +14,11 @@ import { createPayPalOrder, refundPayPalOrder } from "@/lib/paypal";
 import { issueOrderViewToken } from "@/lib/order-token";
 import { auditLog } from "@/lib/audit";
 import { sendOrderCancelled } from "@/lib/email";
+import {
+  validateDiscountForCart,
+  applyDiscountToOrder,
+  normalizeCode,
+} from "@/lib/discount";
 import type { ActionResponse } from "@/types";
 
 /**
@@ -205,7 +210,7 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
       };
     }
 
-    const { idempotencyKey, customer, items, notes } = parsed.data;
+    const { idempotencyKey, customer, items, notes, discountCode } = parsed.data;
 
     // Idempotency
     const existing = await prisma.order.findUnique({
@@ -257,7 +262,7 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
     }
 
     // Validate + create order + decrement stock atomically
-    const { newOrder, total, orderItemsData, viewToken } = await prisma.$transaction(async (tx) => {
+    const { newOrder, subtotal, total, discountAmount, discountType, discountValue, discountCodeApplied, orderItemsData, viewToken } = await prisma.$transaction(async (tx) => {
       let subtotal = 0;
       const orderItemsData: Array<{
         productId: string;
@@ -299,9 +304,31 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
         });
       }
 
+      // Apply discount if provided (inside the same tx so it's atomic)
+      let discountAmount = 0;
+      let discountType: string | null = null;
+      let discountValue: number | null = null;
+      let discountCodeApplied: string | null = null;
+      if (discountCode) {
+        // We already validated externally, but re-validate inside tx for safety
+        // (the validateDiscountForCart helper also computes the amount).
+        const validation = await validateDiscountForCart({
+          code: discountCode,
+          subtotal,
+          customerEmail: customer.email,
+        });
+        if (!validation.ok) {
+          throw new Error(validation.error);
+        }
+        discountAmount = validation.discountAmount;
+        discountType = validation.type;
+        discountValue = validation.value;
+        discountCodeApplied = validation.code;
+      }
+
       const orderNumber = generateOrderNumber();
       const shippingCost = 0;
-      const total = subtotal + shippingCost;
+      const total = Math.max(0, subtotal - discountAmount + shippingCost);
 
       // Issue a view token so the success page can verify ownership.
       // The HASH is stored in the DB; the RAW token is returned to the
@@ -328,6 +355,10 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
           subtotal,
           shippingCost,
           total,
+          discountCode: discountCodeApplied,
+          discountType,
+          discountValue,
+          discountAmount,
           status: "AWAITING_PAYMENT",
           paymentStatus: "UNPAID",
           fulfillmentStatus: "UNFULFILLED",
@@ -346,7 +377,18 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
         // locking inventory — see the docs/orders.md for the full flow.
       }
 
-      return { newOrder, total, orderItemsData, viewToken };
+      // Apply discount side-effects (increment usageCount, create DiscountUsage)
+      // MUST be after order create (needs order.id)
+      if (discountCodeApplied && discountAmount > 0) {
+        await applyDiscountToOrder(tx, {
+          code: discountCodeApplied,
+          orderId: newOrder.id,
+          customerEmail: customer.email,
+          discountAmount,
+        });
+      }
+
+      return { newOrder, subtotal, total, discountAmount, discountType, discountValue, discountCodeApplied, orderItemsData, viewToken };
     });
 
     // Create PayPal order. If PayPal is down, we still have the order

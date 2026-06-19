@@ -6,12 +6,13 @@ import { useRouter } from "next/navigation";
 import { ShoppingBag, ArrowRight } from "lucide-react";
 import { useCartStore } from "@/components/public/cart-store";
 import { CartItem } from "@/components/public/cart-item";
+import { DiscountCodeInput } from "@/components/public/discount-code-input";
 import { formatMoney } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 export default function CartPage() {
   const router = useRouter();
-  const { items, getSubtotal } = useCartStore();
+  const { items, getSubtotal, getTotal } = useCartStore();
   const subtotal = getSubtotal();
 
   // Scroll to top on mount
@@ -90,10 +91,15 @@ export default function CartPage() {
                 </div>
               </div>
 
+              {/* Promo Code */}
+              <div className="py-6 border-b border-heuse-border">
+                <DiscountCodeInput />
+              </div>
+
               {/* Total */}
               <div className="flex justify-between py-6">
                 <span className="font-heading text-xl">Total</span>
-                <span className="font-heading text-xl text-heuse-text">{formatMoney(subtotal)}</span>
+                <span className="font-heading text-xl text-heuse-text">{formatMoney(getTotal())}</span>
               </div>
 
               {/* Checkout Button */}

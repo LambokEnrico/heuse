@@ -4,10 +4,20 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { CartItem } from "@/types";
 
+type AppliedDiscount = {
+  code: string;
+  type: "PERCENTAGE" | "FIXED";
+  value: number;
+  discountAmount: number;
+  displayValue: string;
+};
+
 type CartStore = {
   items: CartItem[];
   /** Single-item "buy now" override. When set, checkout uses this instead of `items`. */
   buyNowItem: CartItem | null;
+  /** Discount code currently applied to the cart (null = none) */
+  appliedDiscount: AppliedDiscount | null;
   /** Tracks whether the store has hydrated from localStorage */
   _hasHydrated: boolean;
   addItem: (item: CartItem) => void;
@@ -16,7 +26,10 @@ type CartStore = {
   clearCart: () => void;
   setBuyNowItem: (item: CartItem | null) => void;
   clearBuyNowItem: () => void;
+  setAppliedDiscount: (d: AppliedDiscount | null) => void;
   getSubtotal: () => number;
+  getDiscountAmount: () => number;
+  getTotal: () => number;
   getTotalItems: () => number;
   setHasHydrated: (state: boolean) => void;
 };
@@ -26,6 +39,7 @@ export const useCartStore = create<CartStore>()(
     (set, get) => ({
       items: [],
       buyNowItem: null,
+      appliedDiscount: null,
       _hasHydrated: false,
 
       addItem: (item) => {
@@ -65,17 +79,29 @@ export const useCartStore = create<CartStore>()(
         });
       },
 
-      clearCart: () => set({ items: [] }),
+      clearCart: () => set({ items: [], appliedDiscount: null }),
 
       setBuyNowItem: (item) => set({ buyNowItem: item }),
 
       clearBuyNowItem: () => set({ buyNowItem: null }),
+
+      setAppliedDiscount: (d) => set({ appliedDiscount: d }),
 
       getSubtotal: () => {
         return get().items.reduce(
           (sum, item) => sum + item.price * item.quantity,
           0
         );
+      },
+
+      getDiscountAmount: () => {
+        return get().appliedDiscount?.discountAmount ?? 0;
+      },
+
+      getTotal: () => {
+        const subtotal = get().getSubtotal();
+        const discount = get().getDiscountAmount();
+        return Math.max(0, subtotal - discount);
       },
 
       getTotalItems: () => {
@@ -89,7 +115,10 @@ export const useCartStore = create<CartStore>()(
       // Don't persist buyNowItem — it's transient and should not survive page refreshes
       // in a way that confuses the user.
       // Also skip _hasHydrated since it's a runtime-only flag
-      partialize: (state) => ({ items: state.items }),
+      partialize: (state) => ({
+        items: state.items,
+        appliedDiscount: state.appliedDiscount,
+      }),
       onRehydrateStorage: () => (state) => {
         // Mark hydration as complete after state is restored
         state?.setHasHydrated(true);
