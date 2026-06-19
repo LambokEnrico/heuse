@@ -6,6 +6,7 @@ import {
   type PayPalWebhookEvent,
 } from "@/lib/paypal";
 import { sendOrderConfirmation } from "@/lib/email";
+import { issueOrderTrackingToken, verifyOrderViewToken, isTokenExpired } from "@/lib/order-token";
 
 /**
  * PayPal webhook handler.
@@ -163,6 +164,39 @@ export async function POST(req: NextRequest) {
       // Send confirmation email AFTER successful transaction
       // (best-effort — failure here doesn't roll back the order)
       try {
+        // Issue a fresh tracking token at capture time so the email can
+        // include a working /track link. The raw token is sent to the
+        // customer; only the hash is persisted. (Same security pattern as
+        // the existing viewToken — see lib/order-token.ts for rationale.)
+        //
+        // If a tracking token already exists on the order (e.g., re-send
+        // scenario), re-use it so the customer always has the same link.
+        let rawTrackingToken: string;
+        if (order.trackingToken && !isTokenExpired(order.trackingTokenExpiresAt)) {
+          // Re-issue only the raw form (we have the hash, but need raw
+          // for the email). We can't reverse the hash, so we generate a
+          // fresh token + update the hash.
+          const { token, hash, expiresAt } = issueOrderTrackingToken();
+          rawTrackingToken = token;
+          await prisma.order.update({
+            where: { id: order.id },
+            data: {
+              trackingToken: hash,
+              trackingTokenExpiresAt: expiresAt,
+            },
+          });
+        } else {
+          const { token, hash, expiresAt } = issueOrderTrackingToken();
+          rawTrackingToken = token;
+          await prisma.order.update({
+            where: { id: order.id },
+            data: {
+              trackingToken: hash,
+              trackingTokenExpiresAt: expiresAt,
+            },
+          });
+        }
+
         await sendOrderConfirmation({
           email: order.customerEmail,
           customerName: order.customerName,
@@ -174,6 +208,7 @@ export async function POST(req: NextRequest) {
             quantity: it.quantity,
             price: Number(it.price),
           })),
+          trackingToken: rawTrackingToken,
           siteUrl: process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
         });
       } catch (emailErr) {

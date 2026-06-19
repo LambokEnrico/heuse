@@ -7,13 +7,14 @@ import {
   createOrderSchema,
   updateOrderStatusSchema,
   refundOrderSchema,
+  shipOrderSchema,
 } from "@/validations/orders";
 import { requireRole } from "@/lib/permissions";
 import { generateOrderNumber } from "@/lib/utils";
 import { createPayPalOrder, refundPayPalOrder } from "@/lib/paypal";
-import { issueOrderViewToken } from "@/lib/order-token";
+import { issueOrderViewToken, issueOrderTrackingToken } from "@/lib/order-token";
 import { auditLog } from "@/lib/audit";
-import { sendOrderCancelled } from "@/lib/email";
+import { sendOrderCancelled, sendOrderShipped } from "@/lib/email";
 import {
   validateDiscountForCart,
   applyDiscountToOrder,
@@ -195,6 +196,7 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
     approvalUrl: string;
     total: number;
     viewToken: string | null;
+    trackingToken: string | null;
   }>
 > {
   try {
@@ -238,6 +240,7 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
                 approvalUrl: approvalLink.href,
                 total: Number(existing.total),
                 viewToken: null, // Re-use from original response
+                trackingToken: null, // Re-use from original response
               },
             };
           }
@@ -256,13 +259,14 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
             approvalUrl: `${process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"}/checkout/success/${existing.orderNumber}`,
             total: Number(existing.total),
             viewToken: null,
+            trackingToken: null,
           },
         };
       }
     }
 
     // Validate + create order + decrement stock atomically
-    const { newOrder, subtotal, total, discountAmount, discountType, discountValue, discountCodeApplied, orderItemsData, viewToken } = await prisma.$transaction(async (tx) => {
+    const { newOrder, subtotal, total, discountAmount, discountType, discountValue, discountCodeApplied, orderItemsData, viewToken, trackingToken } = await prisma.$transaction(async (tx) => {
       let subtotal = 0;
       const orderItemsData: Array<{
         productId: string;
@@ -335,6 +339,14 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
       // client and embedded in the PayPal return_url.
       const { token: viewToken, hash: viewTokenHash, expiresAt: viewTokenExpiresAt } =
         issueOrderViewToken();
+      // Also issue a tracking token for the /track page (1-year TTL).
+      // Used in confirmation + shipped emails so customers can come back
+      // and check status without needing to log in or save the success URL.
+      const {
+        token: trackingToken,
+        hash: trackingTokenHash,
+        expiresAt: trackingTokenExpiresAt,
+      } = issueOrderTrackingToken();
       // 24-hour reservation: if PayPal isn't completed in time, the cron
       // job releases the stock back to the catalog (see /api/cron/release-stock).
       const expiredAt = new Date(Date.now() + ORDER_RESERVATION_HOURS * 60 * 60 * 1000);
@@ -365,6 +377,8 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
           paymentMethod: "PAYPAL",
           viewToken: viewTokenHash,
           viewTokenExpiresAt,
+          trackingToken: trackingTokenHash,
+          trackingTokenExpiresAt,
           expiredAt,
         },
       });
@@ -388,7 +402,7 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
         });
       }
 
-      return { newOrder, subtotal, total, discountAmount, discountType, discountValue, discountCodeApplied, orderItemsData, viewToken };
+      return { newOrder, subtotal, total, discountAmount, discountType, discountValue, discountCodeApplied, orderItemsData, viewToken, trackingToken };
     });
 
     // Create PayPal order. If PayPal is down, we still have the order
@@ -464,6 +478,7 @@ export async function createOrderWithPayPalPayment(input: unknown): Promise<
         approvalUrl,
         total,
         viewToken, // raw token — used by success page
+        trackingToken, // raw token — used for /track page (email)
       },
     };
   } catch (error) {
@@ -636,6 +651,16 @@ export async function updateOrderStatus(input: unknown): Promise<ActionResponse<
           paymentStatus: paymentStatus || undefined,
           fulfillmentStatus: fulfillmentStatus || undefined,
           internalNote: internalNote !== undefined ? internalNote : undefined,
+          trackingNumber: parsed.data.trackingNumber ?? undefined,
+          trackingCarrier: parsed.data.trackingCarrier ?? undefined,
+          // Auto-stamp shippedAt when transitioning to SHIPPED
+          ...(fulfillmentStatus === "SHIPPED" && !order.shippedAt
+            ? { shippedAt: new Date() }
+            : {}),
+          // Auto-stamp deliveredAt when transitioning to DELIVERED
+          ...(fulfillmentStatus === "DELIVERED" && !order.deliveredAt
+            ? { deliveredAt: new Date() }
+            : {}),
         },
       });
     }
@@ -764,6 +789,111 @@ export async function releaseOrderStock(input: unknown): Promise<ActionResponse<
     return {
       success: false,
       error: { code: "SERVER_ERROR", message: "Failed to release stock" },
+    };
+  }
+}
+
+/**
+ * Mark an order as shipped — sets tracking number + carrier, transitions
+ * fulfillmentStatus to SHIPPED, stamps shippedAt, and (optionally) sends
+ * a shipping-notification email to the customer.
+ *
+ * Use case: admin clicks "Mark as Shipped" in the order detail page after
+ * creating a shipment with the carrier.
+ */
+export async function shipOrder(input: unknown): Promise<ActionResponse<{ orderId: string; trackingNumber: string }>> {
+  const auth = await requireRole(["ADMIN", "OWNER"]);
+  if (!auth.authorized) return auth.error;
+
+  try {
+    const parsed = shipOrderSchema.safeParse(input);
+    if (!parsed.success) {
+      return {
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid input",
+          fieldErrors: parsed.error.flatten().fieldErrors,
+        },
+      };
+    }
+
+    const { orderId, trackingNumber, trackingCarrier, notifyCustomer } = parsed.data;
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (!order) {
+      return { success: false, error: { code: "NOT_FOUND", message: "Order not found" } };
+    }
+    if (order.paymentStatus !== "PAID") {
+      return {
+        success: false,
+        error: {
+          code: "INVALID_STATE",
+          message: `Cannot ship an unpaid order (paymentStatus=${order.paymentStatus}).`,
+        },
+      };
+    }
+
+    await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        fulfillmentStatus: "SHIPPED",
+        trackingNumber,
+        trackingCarrier,
+        shippedAt: order.shippedAt ?? new Date(),
+      },
+    });
+
+    await auditLog({
+      action: "order.ship",
+      resource: `Order:${orderId}`,
+      details: {
+        orderNumber: order.orderNumber,
+        trackingNumber,
+        trackingCarrier,
+      },
+    });
+
+    // Send shipping email (best-effort; failure doesn't block the action)
+    if (notifyCustomer) {
+      try {
+        // Ensure we have a tracking token to include in the email.
+        // If we have a non-expired token already, we still need a new raw
+        // token for the email (we only have the hash). Issue a fresh one.
+        const { token: rawTrackingToken, hash, expiresAt } = issueOrderTrackingToken();
+        await prisma.order.update({
+          where: { id: orderId },
+          data: { trackingToken: hash, trackingTokenExpiresAt: expiresAt },
+        });
+
+        await sendOrderShipped({
+          email: order.customerEmail,
+          customerName: order.customerName,
+          orderNumber: order.orderNumber,
+          trackingNumber,
+          trackingToken: rawTrackingToken,
+          siteUrl: process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
+        });
+      } catch (emailErr) {
+        console.error(
+          `[shipOrder] Failed to send shipping email for ${order.orderNumber}:`,
+          emailErr
+        );
+      }
+    }
+
+    revalidatePath("/admin/orders");
+    revalidatePath(`/admin/orders/${orderId}`);
+
+    return { success: true, data: { orderId, trackingNumber } };
+  } catch (error) {
+    console.error("[shipOrder]", error);
+    return {
+      success: false,
+      error: { code: "SERVER_ERROR", message: "Failed to mark order as shipped" },
     };
   }
 }

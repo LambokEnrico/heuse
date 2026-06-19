@@ -30,6 +30,9 @@ import { randomBytes, createHmac, timingSafeEqual } from "crypto";
 
 const TOKEN_BYTES = 32; // 256 bits of entropy
 const DEFAULT_TTL_DAYS = 30;
+// Tracking tokens live longer (1 year) — used for the /track page where
+// customers come back days/weeks later to check shipment status.
+const DEFAULT_TRACKING_TTL_DAYS = 365;
 
 function getSecret(): string {
   const secret =
@@ -57,6 +60,27 @@ export function issueOrderViewToken(ttlDays: number = DEFAULT_TTL_DAYS): {
   const hash = hashOrderViewToken(token);
   const expiresAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000);
   return { token, hash, expiresAt };
+}
+
+/**
+ * Generate a tracking token for the customer-facing /track page.
+ *
+ * Separate from viewToken because:
+ *   - Tracking tokens have a 1-year default TTL (view tokens expire in 30d)
+ *   - Tracked via separate DB column (Order.trackingToken)
+ *   - Sent in confirmation email + shipped email
+ *
+ * Uses the same HMAC + random-token pattern as viewToken — see top of file
+ * for security rationale.
+ */
+export function issueOrderTrackingToken(ttlDays: number = DEFAULT_TRACKING_TTL_DAYS): {
+  token: string;
+  hash: string;
+  expiresAt: Date;
+} {
+  // Same primitive — uses the same hash function. The split is purely
+  // semantic (different default TTL, different DB column).
+  return issueOrderViewToken(ttlDays);
 }
 
 /**

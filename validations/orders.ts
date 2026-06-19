@@ -34,6 +34,8 @@ export const updateOrderStatusSchema = z.object({
     .enum(["UNFULFILLED", "PACKED", "SHIPPED", "DELIVERED"])
     .optional(),
   internalNote: z.string().max(1000).optional(),
+  trackingNumber: z.string().max(120).optional(),
+  trackingCarrier: z.string().max(60).optional(),
 });
 
 /**
@@ -53,3 +55,18 @@ export const refundOrderSchema = z.object({
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 export type UpdateOrderStatusInput = z.infer<typeof updateOrderStatusSchema>;
 export type RefundOrderInput = z.infer<typeof refundOrderSchema>;
+
+/**
+ * Mark an order as shipped — sets tracking number + carrier, transitions
+ * fulfillmentStatus to SHIPPED, and stamps shippedAt timestamp.
+ *
+ * Use case: admin clicks "Mark as Shipped" in the order detail page after
+ * creating a shipment with the carrier. The tracking info then appears on
+ * the customer's /track page and triggers a shipping-notification email.
+ */
+export const shipOrderSchema = z.object({
+  orderId: z.string().cuid(),
+  trackingNumber: z.string().min(2).max(120),
+  trackingCarrier: z.string().min(2).max(60),
+  notifyCustomer: z.coerce.boolean().default(true),
+});

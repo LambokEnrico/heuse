@@ -89,13 +89,21 @@ export async function sendOrderConfirmation(params: {
   total: number;
   items: OrderItem[];
   siteUrl: string;
+  /** Raw tracking token for the /track page link (1-year TTL). */
+  trackingToken?: string;
 }): Promise<{ id: string } | null> {
   if (!resend) {
     console.warn("[email] Resend not initialized, skipping sendOrderConfirmation");
     return null;
   }
 
-  const { email, customerName, orderNumber, total, items, siteUrl } = params;
+  const { email, customerName, orderNumber, total, items, siteUrl, trackingToken } = params;
+
+  // /track link (1-year magic link). Falls back to /account if no token
+  // (legacy emails where trackingToken wasn't generated yet).
+  const trackLink = trackingToken
+    ? `${siteUrl}/track/${encodeURIComponent(orderNumber)}?token=${encodeURIComponent(trackingToken)}`
+    : `${siteUrl}/account`;
 
   const html = `
     <!DOCTYPE html>
@@ -123,6 +131,12 @@ export async function sendOrderConfirmation(params: {
             <p>Kami akan kirim email lagi kalo pesanan udah dikirim.</p>
             <a href="${siteUrl}/checkout/success/${encodeURIComponent(orderNumber)}" class="btn">
               Lihat Detail Pesanan
+            </a>
+            <p style="margin-top:24px;font-size:13px;color:#666;">
+              💌 Save link ini buat cek status pesanan kapan aja (valid 1 tahun):
+            </p>
+            <a href="${trackLink}" style="display:inline-block;background:transparent;color:#1a1a1a !important;padding:10px 20px;text-decoration:none;margin-top:8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;border:1px solid #1a1a1a;">
+              📦 Track Pesanan
             </a>
           </div>
           <div class="footer">
@@ -157,6 +171,7 @@ export async function sendOrderShipped(params: {
   customerName: string;
   orderNumber: string;
   trackingNumber?: string;
+  trackingToken?: string;
   siteUrl: string;
 }): Promise<{ id: string } | null> {
   if (!resend) {
@@ -164,7 +179,11 @@ export async function sendOrderShipped(params: {
     return null;
   }
 
-  const { email, customerName, orderNumber, trackingNumber, siteUrl } = params;
+  const { email, customerName, orderNumber, trackingNumber, trackingToken, siteUrl } = params;
+
+  const trackLink = trackingToken
+    ? `${siteUrl}/track/${encodeURIComponent(orderNumber)}?token=${encodeURIComponent(trackingToken)}`
+    : `${siteUrl}/account`;
 
   const html = `
     <!DOCTYPE html>
@@ -178,7 +197,7 @@ export async function sendOrderShipped(params: {
             <p>Pesanan lo udah dikirim! 📦</p>
             <p>Order: <span class="order-num">${escapeHtml(orderNumber)}</span></p>
             ${trackingNumber ? `<p>Nomor resi: <strong>${escapeHtml(trackingNumber)}</strong></p>` : ""}
-            <a href="${siteUrl}/account" class="btn">Track Order</a>
+            <a href="${trackLink}" class="btn">Track Order</a>
           </div>
           <div class="footer">HEUSE Luxury Menswear</div>
         </div>
