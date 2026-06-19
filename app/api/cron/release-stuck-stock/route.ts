@@ -80,7 +80,6 @@ async function handle(req: NextRequest) {
       orderNumber: o.orderNumber,
       customer: o.customerName,
       total: Number(o.total),
-      currency: o.currency,
       createdAt: o.createdAt.toISOString(),
       items: o.items.map((i) => ({
         product: i.variant?.product?.name || i.name,
