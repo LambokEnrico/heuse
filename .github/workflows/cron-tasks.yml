@@ -1,0 +1,36 @@
+name: Cron Tasks
+
+on:
+  schedule:
+    # Release expired orders — every 5 minutes
+    - cron: "*/5 * * * *"
+    # Verify order flow — daily at 09:00 UTC (= 16:00 WIB / Jakarta)
+    - cron: "0 9 * * *"
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  release-expired-orders:
+    name: Release Expired Orders
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '* * * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Trigger release-expired-orders
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.PRODUCTION_URL }}/api/cron/release-expired-orders" \
+            -w "\nHTTP %{http_code}\n"
+
+  verify-order-flow:
+    name: Verify Order Flow (Daily Health Check)
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 9 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Trigger verify-order-flow
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.PRODUCTION_URL }}/api/cron/verify-order-flow" \
+            -w "\nHTTP %{http_code}\n"
