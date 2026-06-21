@@ -21,6 +21,14 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
+  return handle(req);
+}
+
+export async function POST(req: NextRequest) {
+  return handle(req);
+}
+
+async function handle(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   const expected = `Bearer ${process.env.CRON_SECRET || ""}`;
   if (!process.env.CRON_SECRET || authHeader !== expected) {
