@@ -8,6 +8,9 @@ import type { NextConfig } from "next";
  * - PayPal SDK loads from www.paypal.com / *.paypal.com
  * - Connect-src must allow PayPal API endpoints (sandbox + live)
  * - Frame-src allows PayPal checkout iframe
+ * - Analytics: Google Analytics (googletagmanager.com) + Meta Pixel
+ *   (connect.facebook.net / *.facebook.com) MUST be in both script-src
+ *   (for the JS SDKs) and connect-src (for telemetry beacons)
  * - Production: NO 'unsafe-eval' (XSS hardening)
  *   'unsafe-inline' for scripts is still needed by Next.js for now
  *   (planned: nonce-based CSP in Next.js 16.1+)
@@ -15,22 +18,46 @@ import type { NextConfig } from "next";
  */
 const isDev = process.env.NODE_ENV !== "production";
 
+// Analytics + tracking domains — kept as a constant for clarity & reuse
+const ANALYTICS_SCRIPT_SRC = [
+  "https://www.googletagmanager.com",
+  "https://*.googletagmanager.com",
+  "https://www.google-analytics.com",
+  "https://connect.facebook.net",
+  "https://*.facebook.com",
+].join(" ");
+
+const ANALYTICS_CONNECT_SRC = [
+  "https://www.googletagmanager.com",
+  "https://*.googletagmanager.com",
+  "https://www.google-analytics.com",
+  "https://*.google-analytics.com",
+  "https://*.analytics.google.com",
+  "https://www.google.com",
+  "https://*.google.com",
+  "https://connect.facebook.net",
+  "https://*.facebook.com",
+  "https://www.facebook.com",
+  "https://*.fbcdn.net",
+].join(" ");
+
 const cspHeader = [
   "default-src 'self'",
   // Scripts: production = no eval, dev = allow HMR
   isDev
-    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.paypal.com https://*.paypalobjects.com https://*.paypal.com https://challenges.cloudflare.com"
-    : "script-src 'self' 'unsafe-inline' https://www.paypal.com https://*.paypalobjects.com https://*.paypal.com https://challenges.cloudflare.com",
+    ? `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.paypal.com https://*.paypalobjects.com https://*.paypal.com https://challenges.cloudflare.com ${ANALYTICS_SCRIPT_SRC}`
+    : `script-src 'self' 'unsafe-inline' https://www.paypal.com https://*.paypalobjects.com https://*.paypal.com https://challenges.cloudflare.com ${ANALYTICS_SCRIPT_SRC}`,
   // Styles: 'unsafe-inline' required by some UI libraries (Radix portals)
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data: https://fonts.gstatic.com",
   // PayPal API + UploadThing API (incl. regional ingest endpoints like
-  // sea1.ingest.uploadthing.com + utfs.io CDN). Dev: ws:/wss: for HMR WebSocket.
+  // sea1.ingest.uploadthing.com + utfs.io CDN) + Analytics beacons.
+  // Dev: ws:/wss: for HMR WebSocket.
   // force-rebuild marker: 1781628705
   isDev
-    ? "connect-src 'self' https://api-m.sandbox.paypal.com https://api-m.paypal.com https://*.paypal.com https://api.uploadthing.com https://*.ingest.uploadthing.com https://utfs.io ws: wss:"
-    : "connect-src 'self' https://api-m.sandbox.paypal.com https://api-m.paypal.com https://*.paypal.com https://api.uploadthing.com https://*.ingest.uploadthing.com https://utfs.io",
+    ? `connect-src 'self' https://api-m.sandbox.paypal.com https://api-m.paypal.com https://*.paypal.com https://api.uploadthing.com https://*.ingest.uploadthing.com https://utfs.io ${ANALYTICS_CONNECT_SRC} ws: wss:`
+    : `connect-src 'self' https://api-m.sandbox.paypal.com https://api-m.paypal.com https://*.paypal.com https://api.uploadthing.com https://*.ingest.uploadthing.com https://utfs.io ${ANALYTICS_CONNECT_SRC}`,
   "frame-src 'self' https://www.paypal.com https://*.paypal.com https://challenges.cloudflare.com",
   "object-src 'none'",
   "base-uri 'self'",

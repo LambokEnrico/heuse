@@ -4,11 +4,19 @@ import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle, Clock, XCircle, AlertCircle, RefreshCw } from "lucide-react";
+import {
+  CheckCircle,
+  Clock,
+  XCircle,
+  AlertCircle,
+  RefreshCw,
+  MessageCircle,
+} from "lucide-react";
 import type { Metadata } from "next";
 import { PayRetryButton } from "./pay-retry-button";
 import { PayPalAutoCapture } from "./paypal-auto-capture";
 import { verifyOrderViewToken, isTokenExpired } from "@/lib/order-token";
+import { TrackPurchase } from "@/components/analytics";
 
 interface Props {
   params: Promise<{ orderNumber: string }>;
@@ -328,6 +336,27 @@ export default async function CheckoutSuccessPage({ params, searchParams }: Prop
           )}
         </div>
 
+        {/* WhatsApp CTA — shown on paid/awaiting for customer support.
+            Renders only if NEXT_PUBLIC_WHATSAPP_NUMBER is set in env. */}
+        {(viewState === "paid" || viewState === "awaiting") &&
+          process.env.NEXT_PUBLIC_WHATSAPP_NUMBER && (
+            <div className="mt-6 text-center">
+              <a
+                href={`https://wa.me/${process.env.NEXT_PUBLIC_WHATSAPP_NUMBER}?text=${encodeURIComponent(
+                  viewState === "paid"
+                    ? `Halo HEUSE, saya ingin konfirmasi pesanan #${order.orderNumber}. Terima kasih!`
+                    : `Halo HEUSE, saya butuh bantuan untuk pesanan #${order.orderNumber} yang masih menunggu pembayaran.`
+                )}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-heuse-muted hover:text-heuse-gold transition-colors text-sm border-b border-heuse-border hover:border-heuse-gold pb-1"
+              >
+                <MessageCircle className="w-4 h-4" />
+                Chat on WhatsApp for help
+              </a>
+            </div>
+          )}
+
         {/* Auto-retry hint */}
         {(retry === "1" || viewState === "awaiting") && !canRetry && (
           <p className="text-center text-xs text-heuse-muted mt-4">
@@ -335,6 +364,24 @@ export default async function CheckoutSuccessPage({ params, searchParams }: Prop
           </p>
         )}
       </div>
+
+      {/* Analytics: fire Purchase event ONLY when order is actually PAID */}
+      <TrackPurchase
+        shouldFire={order.paymentStatus === "PAID"}
+        data={{
+          orderNumber: order.orderNumber,
+          total: Number(order.total),
+          currency: "IDR",
+          items: order.items.map((it) => ({
+            id: it.product?.slug || it.id,
+            name: it.name,
+            price: Number(it.price),
+            quantity: it.quantity,
+          })),
+        }}
+        gaId={process.env.NEXT_PUBLIC_GA_ID}
+        pixelId={process.env.NEXT_PUBLIC_META_PIXEL_ID}
+      />
     </div>
   );
 }
