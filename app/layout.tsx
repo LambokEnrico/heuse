@@ -58,6 +58,9 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${cormorant.variable} ${inter.variable}`}>
       <head>
+        {/* Google Search Console verification */}
+        <meta name="google-site-verification" content="MDHOfZGu4lr-YoXJ3k1hnMrlA7Fkm03wFY54tEjk_lQ" />
+
         {/* Google Analytics 4 — inline script for reliable execution */}
         {gaId && (
           <>
