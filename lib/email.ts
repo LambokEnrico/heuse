@@ -1,13 +1,20 @@
 /**
- * Email service using Resend (https://resend.com)
+ * Email service using SMTP (Gmail).
  *
  * Setup:
- *   1. Sign up at resend.com
- *   2. Add domain (or use onboarding@resend.dev for testing)
- *   3. Create API key
- *   4. Set env vars:
- *      - RESEND_API_KEY
- *      - EMAIL_FROM (e.g., "HEUSE <orders@heuse.com>")
+ *   1. Enable 2FA on Gmail account
+ *   2. Create App Password at https://myaccount.google.com/apppasswords
+ *   3. Set env vars in Railway:
+ *      - SMTP_HOST=smtp.gmail.com
+ *      - SMTP_PORT=587
+ *      - SMTP_USER=heuseofficials@gmail.com
+ *      - SMTP_PASS=<16-char app password>
+ *      - EMAIL_FROM (optional, e.g., "HEUSE <heuseofficials@gmail.com>")
+ *
+ * Why SMTP (not Resend):
+ *   - Works WITHOUT a custom domain (Resend needs one)
+ *   - Free up to ~500 emails/day
+ *   - Sends as your actual Gmail address (heuseofficials@gmail.com)
  *
  * Functions:
  *   - sendOrderConfirmation: After successful payment
@@ -15,17 +22,42 @@
  *   - sendOrderCancelled: When order is cancelled
  */
 
-import { Resend } from "resend";
+import nodemailer from "nodemailer";
 
-if (!process.env.RESEND_API_KEY) {
-  console.warn("[email] RESEND_API_KEY not set — emails will fail silently");
+const SMTP_HOST = process.env.SMTP_HOST;
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10);
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const FROM = process.env.EMAIL_FROM || (SMTP_USER ? `HEUSE <${SMTP_USER}>` : "HEUSE <noreply@heuse.local>");
+
+let transporter: nodemailer.Transporter | null = null;
+let lastInitWarning: string | null = null;
+
+function getTransporter(): nodemailer.Transporter | null {
+  if (transporter) return transporter;
+
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    const msg = `[email] SMTP not configured (SMTP_HOST/USER/PASS missing) — emails will fail silently`;
+    if (lastInitWarning !== msg) {
+      console.warn(msg);
+      lastInitWarning = msg;
+    }
+    return null;
+  }
+
+  transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465, // true for 465, false for 587
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
+  });
+
+  console.log(`[email] SMTP transporter initialized (host=${SMTP_HOST}, port=${SMTP_PORT}, user=${SMTP_USER})`);
+  return transporter;
 }
-
-const resend = process.env.RESEND_API_KEY
-  ? new Resend(process.env.RESEND_API_KEY)
-  : null;
-
-const FROM = process.env.EMAIL_FROM || "HEUSE <onboarding@resend.dev>";
 
 type OrderItem = {
   name: string;
@@ -82,6 +114,33 @@ const baseStyles = `
   .footer { padding: 24px 40px; border-top: 1px solid #eee; color: #888; font-size: 12px; text-align: center; }
 `;
 
+async function sendEmail(params: {
+  to: string;
+  subject: string;
+  html: string;
+  context: string;
+}): Promise<{ id: string } | null> {
+  const tx = getTransporter();
+  if (!tx) {
+    console.warn(`[email] SMTP not configured, skipping ${params.context}`);
+    return null;
+  }
+
+  try {
+    const result = await tx.sendMail({
+      from: FROM,
+      to: params.to,
+      subject: params.subject,
+      html: params.html,
+    });
+    console.log(`[email] ${params.context} sent to ${params.to} (messageId=${result.messageId})`);
+    return { id: result.messageId };
+  } catch (err) {
+    console.error(`[email] Failed to send ${params.context} to ${params.to}:`, err);
+    return null;
+  }
+}
+
 export async function sendOrderConfirmation(params: {
   email: string;
   customerName: string;
@@ -92,11 +151,6 @@ export async function sendOrderConfirmation(params: {
   /** Raw tracking token for the /track page link (1-year TTL). */
   trackingToken?: string;
 }): Promise<{ id: string } | null> {
-  if (!resend) {
-    console.warn("[email] Resend not initialized, skipping sendOrderConfirmation");
-    return null;
-  }
-
   const { email, customerName, orderNumber, total, items, siteUrl, trackingToken } = params;
 
   // /track link (1-year magic link). Falls back to /account if no token
@@ -147,23 +201,12 @@ export async function sendOrderConfirmation(params: {
     </html>
   `;
 
-  try {
-    const result = await resend.emails.send({
-      from: FROM,
-      to: email,
-      subject: `Order ${orderNumber} confirmed`,
-      html,
-    });
-    if (result.error) {
-      console.error(`[email] Resend error for ${orderNumber}:`, result.error);
-      return null;
-    }
-    console.log(`[email] Order confirmation sent to ${email} for ${orderNumber} (${result.data?.id})`);
-    return result.data ?? null;
-  } catch (err) {
-    console.error(`[email] Failed to send order confirmation for ${orderNumber}:`, err);
-    return null;
-  }
+  return sendEmail({
+    to: email,
+    subject: `Order ${orderNumber} confirmed`,
+    html,
+    context: `Order confirmation for ${orderNumber}`,
+  });
 }
 
 export async function sendOrderShipped(params: {
@@ -174,11 +217,6 @@ export async function sendOrderShipped(params: {
   trackingToken?: string;
   siteUrl: string;
 }): Promise<{ id: string } | null> {
-  if (!resend) {
-    console.warn("[email] Resend not initialized, skipping sendOrderShipped");
-    return null;
-  }
-
   const { email, customerName, orderNumber, trackingNumber, trackingToken, siteUrl } = params;
 
   const trackLink = trackingToken
@@ -205,23 +243,12 @@ export async function sendOrderShipped(params: {
     </html>
   `;
 
-  try {
-    const result = await resend.emails.send({
-      from: FROM,
-      to: email,
-      subject: `Order ${orderNumber} shipped`,
-      html,
-    });
-    if (result.error) {
-      console.error(`[email] Resend error:`, result.error);
-      return null;
-    }
-    console.log(`[email] Shipping notification sent for ${orderNumber}`);
-    return result.data ?? null;
-  } catch (err) {
-    console.error(`[email] Failed to send shipping notification:`, err);
-    return null;
-  }
+  return sendEmail({
+    to: email,
+    subject: `Order ${orderNumber} shipped`,
+    html,
+    context: `Shipping notification for ${orderNumber}`,
+  });
 }
 
 export async function sendOrderCancelled(params: {
@@ -231,11 +258,6 @@ export async function sendOrderCancelled(params: {
   reason?: string;
   refunded: boolean;
 }): Promise<{ id: string } | null> {
-  if (!resend) {
-    console.warn("[email] Resend not initialized, skipping sendOrderCancelled");
-    return null;
-  }
-
   const { email, customerName, orderNumber, reason, refunded } = params;
 
   const html = `
@@ -258,21 +280,10 @@ export async function sendOrderCancelled(params: {
     </html>
   `;
 
-  try {
-    const result = await resend.emails.send({
-      from: FROM,
-      to: email,
-      subject: `Order ${orderNumber} cancelled`,
-      html,
-    });
-    if (result.error) {
-      console.error(`[email] Resend error:`, result.error);
-      return null;
-    }
-    console.log(`[email] Cancellation sent for ${orderNumber}`);
-    return result.data ?? null;
-  } catch (err) {
-    console.error(`[email] Failed to send cancellation:`, err);
-    return null;
-  }
+  return sendEmail({
+    to: email,
+    subject: `Order ${orderNumber} cancelled`,
+    html,
+    context: `Cancellation for ${orderNumber}`,
+  });
 }
