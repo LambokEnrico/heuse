@@ -247,3 +247,5 @@ docker exec -i heuse-postgres psql -U postgres -d heuse_dev -c "SELECT count(*) 
 ---
 
 _Last updated: 2026-06-14 (post PayPal migration + comprehensive audit)_
+ 
+ 
