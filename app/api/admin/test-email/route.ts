@@ -29,7 +29,9 @@ async function handle(req: NextRequest) {
   }
 
   const url = new URL(req.url);
-  const to = url.searchParams.get("to") || "heuseofficials@gmail.com";
+  // Default recipient = Resend account email (only verified recipient for un-verified domains).
+  // Override with ?to=other@email.com (will fail unless domain is verified at resend.com/domains).
+  const to = url.searchParams.get("to") || "lambokenricoprayoga@gmail.com";
 
   try {
     const result = await sendOrderConfirmation({
