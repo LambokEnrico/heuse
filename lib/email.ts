@@ -1,20 +1,18 @@
 /**
- * Email service using SMTP (Gmail).
+ * Email service using Resend (https://resend.com).
+ *
+ * Why Resend (not SMTP/Gmail):
+ *   - Uses HTTPS on port 443 (Railway egress is open for 443, but blocks SMTP ports 25/465/587)
+ *   - No domain required for testing — can send from `onboarding@resend.dev`
+ *   - Free tier: 100 emails/day, 3,000/month
+ *   - Built-in dashboard for delivery tracking
  *
  * Setup:
- *   1. Enable 2FA on Gmail account
- *   2. Create App Password at https://myaccount.google.com/apppasswords
+ *   1. Sign up at https://resend.com
+ *   2. Create API key at https://resend.com/api-keys
  *   3. Set env vars in Railway:
- *      - SMTP_HOST=smtp.gmail.com
- *      - SMTP_PORT=587
- *      - SMTP_USER=heuseofficials@gmail.com
- *      - SMTP_PASS=<16-char app password>
- *      - EMAIL_FROM (optional, e.g., "HEUSE <heuseofficials@gmail.com>")
- *
- * Why SMTP (not Resend):
- *   - Works WITHOUT a custom domain (Resend needs one)
- *   - Free up to ~500 emails/day
- *   - Sends as your actual Gmail address (heuseofficials@gmail.com)
+ *      - RESEND_API_KEY=re_xxxxxxxxxxxxxx
+ *      - EMAIL_FROM="HEUSE <onboarding@resend.dev>"   (or use a verified custom domain)
  *
  * Functions:
  *   - sendOrderConfirmation: After successful payment
@@ -22,22 +20,19 @@
  *   - sendOrderCancelled: When order is cancelled
  */
 
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
-const SMTP_HOST = process.env.SMTP_HOST;
-const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10);
-const SMTP_USER = process.env.SMTP_USER;
-const SMTP_PASS = process.env.SMTP_PASS;
-const FROM = process.env.EMAIL_FROM || (SMTP_USER ? `HEUSE <${SMTP_USER}>` : "HEUSE <noreply@heuse.local>");
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const FROM = process.env.EMAIL_FROM || "HEUSE <onboarding@resend.dev>";
 
-let transporter: nodemailer.Transporter | null = null;
+let resend: Resend | null = null;
 let lastInitWarning: string | null = null;
 
-function getTransporter(): nodemailer.Transporter | null {
-  if (transporter) return transporter;
+function getResend(): Resend | null {
+  if (resend) return resend;
 
-  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
-    const msg = `[email] SMTP not configured (SMTP_HOST/USER/PASS missing) — emails will fail silently`;
+  if (!RESEND_API_KEY) {
+    const msg = `[email] RESEND_API_KEY not set — emails will fail silently`;
     if (lastInitWarning !== msg) {
       console.warn(msg);
       lastInitWarning = msg;
@@ -45,18 +40,9 @@ function getTransporter(): nodemailer.Transporter | null {
     return null;
   }
 
-  transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT === 465, // true for 465, false for 587
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
-  });
-
-  console.log(`[email] SMTP transporter initialized (host=${SMTP_HOST}, port=${SMTP_PORT}, user=${SMTP_USER})`);
-  return transporter;
+  resend = new Resend(RESEND_API_KEY);
+  console.log(`[email] Resend client initialized (from=${FROM})`);
+  return resend;
 }
 
 type OrderItem = {
@@ -120,21 +106,27 @@ async function sendEmail(params: {
   html: string;
   context: string;
 }): Promise<{ id: string } | null> {
-  const tx = getTransporter();
-  if (!tx) {
-    console.warn(`[email] SMTP not configured, skipping ${params.context}`);
+  const client = getResend();
+  if (!client) {
+    console.warn(`[email] Resend not configured, skipping ${params.context}`);
     return null;
   }
 
   try {
-    const result = await tx.sendMail({
+    const result = await client.emails.send({
       from: FROM,
       to: params.to,
       subject: params.subject,
       html: params.html,
     });
-    console.log(`[email] ${params.context} sent to ${params.to} (messageId=${result.messageId})`);
-    return { id: result.messageId };
+
+    if (result.error) {
+      console.error(`[email] Resend API error for ${params.context} to ${params.to}:`, result.error);
+      return null;
+    }
+
+    console.log(`[email] ${params.context} sent to ${params.to} (id=${result.data?.id})`);
+    return { id: result.data?.id ?? "unknown" };
   } catch (err) {
     console.error(`[email] Failed to send ${params.context} to ${params.to}:`, err);
     return null;
