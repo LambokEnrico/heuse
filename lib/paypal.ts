@@ -149,19 +149,31 @@ const ZERO_DECIMAL_CURRENCIES = new Set([
 ]);
 
 /**
- * Demo: hardcoded IDR → USD rate for sandbox testing.
- * PayPal sandbox accounts typically don't support IDR even though it's
- * listed as "supported" in docs — depends on merchant account configuration.
- * TODO: replace with a live FX API for production, OR force merchant account
- * to enable IDR, OR run in "live" mode with an IDR-enabled account.
+ * IDR → USD exchange rate for PayPal conversion.
+ *
+ * Why we need this:
+ *   PayPal merchant accounts in Indonesia typically don't support IDR even
+ *   in LIVE mode — the API returns `CURRENCY_NOT_SUPPORTED` for IDR payments.
+ *   Workaround: convert IDR → USD before sending to PayPal.
+ *
+ * Customer sees IDR prices on our site (consistent with HEUSE's brand),
+ * but PayPal charges in USD. PayPal handles the final currency conversion
+ * for the customer's bank (e.g. customer in Japan pays JPY equivalent).
+ *
+ * Override via env: `PAYPAL_IDR_TO_USD_RATE`
+ * (default 16000 — update periodically for accuracy)
  */
-export const DEMO_IDR_TO_USD_RATE = 16000;
+export const DEMO_IDR_TO_USD_RATE = Number(process.env.PAYPAL_IDR_TO_USD_RATE) || 16000;
 
 /**
  * Convert amount/currency for the PayPal API call.
  *
- * Sandbox: IDR → USD (sandbox accounts usually don't support IDR).
- * Live: pass-through (respect merchant account currency support).
+ * **Always converts IDR → USD** (sandbox AND live). PayPal merchant
+ * accounts in Indonesia don't support IDR — verified by Railway logs
+ * showing `CURRENCY_NOT_SUPPORTED` on 2026-06-22.
+ *
+ * If you have a verified PayPal merchant account with IDR support, set
+ * `PAYPAL_KEEP_IDR=1` in Railway env to skip this conversion.
  *
  * Used by BOTH createPayPalOrder (to send to PayPal) AND capture-order
  * validation (to verify PayPal returns what we expect).
@@ -171,13 +183,23 @@ export function convertForPayPal(
   currency: string
 ): { amount: string; currency: string; wasConverted: boolean } {
   const numAmount = Number(amount);
-  if (!isLive() && currency.toUpperCase() === "IDR") {
+
+  // Force IDR → USD unless explicitly opted out via env
+  if (
+    currency.toUpperCase() === "IDR" &&
+    process.env.PAYPAL_KEEP_IDR !== "1"
+  ) {
+    const usdAmount = (numAmount / DEMO_IDR_TO_USD_RATE).toFixed(2);
+    console.log(
+      `[paypal] Converting ${numAmount} IDR → ${usdAmount} USD (rate=${DEMO_IDR_TO_USD_RATE})`
+    );
     return {
-      amount: (numAmount / DEMO_IDR_TO_USD_RATE).toFixed(2),
+      amount: usdAmount,
       currency: "USD",
       wasConverted: true,
     };
   }
+
   // Zero-decimal currencies (JPY, IDR, etc.) need integer strings
   const isZeroDecimal = ZERO_DECIMAL_CURRENCIES.has(currency.toUpperCase());
   return {
